@@ -1,0 +1,14 @@
+{
+  "name": "link-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal relay so two browser extensions can pass links to each other.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}
