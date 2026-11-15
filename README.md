@@ -17,16 +17,16 @@ Link Bridge is made of two separate projects that talk to each other over a smal
 
 A Manifest V3 browser extension for Chrome, Brave, and other Chromium browsers. The same folder works in every browser.
 
-- Adds right-click entries to send the current page or a link to your other browser, plus a toolbar popup with a "Send current tab" button and an inbox of received links.
+- Adds right-click entries to send the current page or a link to your other browser, named by its label (for example "Send this page to Brave"), plus a toolbar popup with a "Send current tab" button and an inbox of received links.
 - Receives links either by opening them automatically or by queuing them in the popup with a badge count.
 - Keeps a WebSocket open to the relay for near-instant delivery. A heartbeat, a quick retry, and a once-a-minute `chrome.alarms` watchdog work around Chrome's service worker lifetime limits.
-- Settings are the relay URL, the shared API token, and an auto-open toggle.
+- Settings are the relay URL, the shared API token, an auto-open toggle, and a label naming this browser. Other browsers use it in their menus and inbox, and the relay logs it.
 
 ### [`link-relay-go`](link-relay-go/README.md)
 
 The relay server, written in Go with the standard library only, so it builds to a single static binary with no dependencies.
 
-- `POST /links` stores a link, `GET /links?deviceId=...` returns the links a device hasn't received yet, and `GET /stream` is the WebSocket that nudges connected devices when something new arrives.
+- `POST /links` stores a link, `GET /links?deviceId=...` returns the links a device hasn't received yet, `GET /devices` lists the labels of the other connected browsers, and `GET /stream` is the WebSocket that nudges connected devices when something new arrives.
 - Stores links in one JSON file, expires them after 48 hours, and tracks delivery per device so more than two devices can share one relay.
 - Protected by a single shared bearer token. Plain HTTP, intended to run on a private network or VPN, or behind TLS.
 

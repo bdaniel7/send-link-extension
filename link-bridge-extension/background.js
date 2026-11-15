@@ -18,6 +18,7 @@ chrome.runtime.onInstalled.addListener(() => {
     contexts: ['link']
   });
   chrome.alarms.create(ALARM_NAME, { periodInMinutes: WATCHDOG_PERIOD_MINUTES });
+  applyMenuTitles();
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -28,6 +29,7 @@ chrome.runtime.onStartup.addListener(() => {
 // including after it's been killed for inactivity or hit the ~5 minute cap.
 // That's what makes the alarm-driven wake-up actually restore the socket.
 connectWebSocket();
+applyMenuTitles();
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== ALARM_NAME) return;
@@ -37,10 +39,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     connectWebSocket();
   }
   pollForLinks();
+  refreshTargets();
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'sync' && (changes.relayUrl || changes.apiToken)) {
+  const settingsChanged = area === 'sync' && (changes.relayUrl || changes.apiToken);
+  const labelChanged = area === 'local' && changes.label;
+  if (settingsChanged || labelChanged) {
     if (ws) { try { ws.close(); } catch {} ws = null; }
     connectWebSocket();
   }
@@ -60,7 +65,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true; // keep the message channel open for the async response
   }
   if (msg?.type === 'CHECK_NOW') {
-    pollForLinks().then(() => sendResponse({ ok: true }));
+    Promise.all([pollForLinks(), refreshTargets()]).then(() => sendResponse({ ok: true }));
     return true;
   }
 });
@@ -70,6 +75,11 @@ async function getSettings() {
     'relayUrl', 'apiToken', 'autoOpen'
   ]);
   return { relayUrl: relayUrl || '', apiToken: apiToken || '', autoOpen: !!autoOpen };
+}
+
+async function getLabel() {
+  const { label } = await chrome.storage.local.get('label');
+  return (label || '').trim();
 }
 
 async function getDeviceId() {
@@ -89,6 +99,47 @@ function notify(title, message) {
   });
 }
 
+// Names of the other browser(s) links will go to, as last reported by the
+// relay. Cached so the menu keeps saying "Brave" even while Brave is closed.
+async function getTargets() {
+  const { targets } = await chrome.storage.local.get('targets');
+  return Array.isArray(targets) ? targets : [];
+}
+
+async function applyMenuTitles() {
+  const targets = await getTargets();
+  const name = targets.length ? targets.join(', ') : 'other browser';
+  for (const [id, noun] of [['send-page', 'page'], ['send-link', 'link']]) {
+    try {
+      await chrome.contextMenus.update(id, { title: `Send this ${noun} to ${name}` });
+    } catch {
+      // Menu doesn't exist yet (first install); onInstalled applies titles
+      // once it has created it.
+    }
+  }
+}
+
+async function refreshTargets() {
+  const { relayUrl, apiToken } = await getSettings();
+  if (!relayUrl || !apiToken) return;
+  const deviceId = await getDeviceId();
+  try {
+    const res = await fetch(`${relayUrl}/devices?deviceId=${encodeURIComponent(deviceId)}`, {
+      headers: { Authorization: `Bearer ${apiToken}` }
+    });
+    if (!res.ok) throw new Error(`relay responded ${res.status}`);
+    const { labels } = await res.json();
+    // Only replace the cached names when the relay actually knows of other
+    // browsers; an empty list just means they're all offline right now.
+    if (Array.isArray(labels) && labels.length) {
+      await chrome.storage.local.set({ targets: labels });
+    }
+  } catch (err) {
+    console.error('Link Bridge target refresh failed', err);
+  }
+  await applyMenuTitles();
+}
+
 async function connectWebSocket() {
   if (connecting || (ws && ws.readyState === WebSocket.OPEN)) return;
   connecting = true;
@@ -96,9 +147,11 @@ async function connectWebSocket() {
     const { relayUrl, apiToken } = await getSettings();
     if (!relayUrl || !apiToken) return;
     const deviceId = await getDeviceId();
+    const label = await getLabel();
 
     const wsUrl = relayUrl.replace(/^http/, 'ws') +
-      `/stream?token=${encodeURIComponent(apiToken)}&deviceId=${encodeURIComponent(deviceId)}`;
+      `/stream?token=${encodeURIComponent(apiToken)}&deviceId=${encodeURIComponent(deviceId)}` +
+      `&label=${encodeURIComponent(label)}`;
 
     const socket = new WebSocket(wsUrl);
 
@@ -106,12 +159,14 @@ async function connectWebSocket() {
       lastMessageAt = Date.now();
       // Catch up on anything that arrived while we were disconnected.
       pollForLinks();
+      refreshTargets();
     };
     socket.onmessage = (event) => {
       lastMessageAt = Date.now();
       let msg;
       try { msg = JSON.parse(event.data); } catch { return; }
       if (msg.type === 'new-link') pollForLinks();
+      if (msg.type === 'devices-changed') refreshTargets();
       // 'heartbeat' messages need no action — just arriving keeps this
       // service worker's activity timer from expiring.
     };
@@ -139,6 +194,7 @@ async function sendLink(url, title) {
     return;
   }
   const deviceId = await getDeviceId();
+  const label = await getLabel();
   try {
     const res = await fetch(`${relayUrl}/links`, {
       method: 'POST',
@@ -146,7 +202,7 @@ async function sendLink(url, title) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiToken}`
       },
-      body: JSON.stringify({ url, title, deviceId })
+      body: JSON.stringify({ url, title, deviceId, label })
     });
     if (!res.ok) throw new Error(`relay responded ${res.status}`);
   } catch (err) {
@@ -179,7 +235,8 @@ async function pollForLinks() {
     await chrome.storage.local.set({ inbox: updated });
     chrome.action.setBadgeText({ text: String(updated.length) });
     chrome.action.setBadgeBackgroundColor({ color: '#0F6E56' });
-    notify('New link received', incoming[0].title || incoming[0].url);
+    const from = incoming[0].fromLabel;
+    notify(from ? `New link from ${from}` : 'New link received', incoming[0].title || incoming[0].url);
   } catch (err) {
     console.error('Link Bridge poll failed', err);
   }

@@ -41,6 +41,7 @@ type wsConn struct {
 	mu     sync.Mutex
 	closed bool
 	alive  atomic.Bool
+	label  string // browser label announced by the extension on connect
 }
 
 func upgrade(w http.ResponseWriter, r *http.Request) (*wsConn, error) {

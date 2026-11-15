@@ -25,6 +25,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/links", requireBearer(token, h.handleLinks))
+	mux.HandleFunc("/devices", requireBearer(token, h.handleDevices))
 	mux.HandleFunc("/stream", h.handleStream) // auth via query param, checked inside
 
 	log.Printf("Link relay listening on port %s", port)

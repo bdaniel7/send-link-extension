@@ -81,30 +81,39 @@ REST endpoints use `Authorization: Bearer <API_TOKEN>`.
 Add a link.
 
 ```json
-{ "url": "https://example.com", "title": "Example", "deviceId": "device-a" }
+{ "url": "https://example.com", "title": "Example", "deviceId": "device-a", "label": "Brave" }
 ```
 
-`url` and `deviceId` are required. Responds `201` with `{"ok": true, "id": "<uuid>"}`. Every connected device except the sender is then notified over WebSocket.
+`url` and `deviceId` are required. `label` is optional: a name for the sending browser, trimmed, stripped of control characters and capped at 40 characters. Responds `201` with `{"ok": true, "id": "<uuid>"}`. Every connected device except the sender is then notified over WebSocket.
 
 ### `GET /links?deviceId=<id>`
 
 Return links this device hasn't received yet, excluding links it sent itself. Each returned link is marked as seen by that device, so a second call returns `[]`.
 
 ```json
-[{ "id": "...", "url": "https://example.com", "title": "Example", "createdAt": 1787947979166 }]
+[{ "id": "...", "url": "https://example.com", "title": "Example", "createdAt": 1787947979166, "fromLabel": "Brave" }]
 ```
 
-`createdAt` is Unix time in milliseconds.
+`createdAt` is Unix time in milliseconds. `fromLabel` is the sender's label and is omitted if it didn't send one.
 
-### `GET /stream?token=<API_TOKEN>&deviceId=<id>` (WebSocket)
+### `GET /devices?deviceId=<id>`
 
-Real-time channel. Browsers can't set custom headers on a WebSocket handshake, so the token goes in the query string here instead. A bad token gets HTTP `401`.
+Return the labels of the other browsers currently connected over WebSocket, so an extension can name its destination (for example "Send this page to Brave"). Labels are distinct, non-empty and sorted; devices that haven't set a label are omitted.
+
+```json
+{ "labels": ["Brave", "Firefox"] }
+```
+
+### `GET /stream?token=<API_TOKEN>&deviceId=<id>&label=<name>` (WebSocket)
+
+Real-time channel. Browsers can't set custom headers on a WebSocket handshake, so the token goes in the query string here instead. A bad token gets HTTP `401`. `label` is optional and is how this device appears in other devices' `GET /devices` results.
 
 The server sends two kinds of text messages:
 
 | Message | Meaning |
 | --- | --- |
 | `{"type":"new-link"}` | Another device sent a link. Call `GET /links`. |
+| `{"type":"devices-changed"}` | Another device just connected. Call `GET /devices` to refresh the browser names shown in menus. |
 | `{"type":"heartbeat"}` | Sent every 20 seconds so the extension's service worker stays awake. No action needed. |
 
 The server also sends protocol-level pings and drops connections that don't answer the previous one. The socket never carries link data. `GET /links` remains the single source of truth for delivery.
@@ -115,6 +124,22 @@ The server also sends protocol-level pings and drops connections that don't answ
 - **Storage:** a single `links.json` file. All reads and writes happen inside one mutex-guarded load-modify-save step, so concurrent requests can't lose updates.
 - **Multiple devices:** delivery is tracked per device in a `seenBy` list rather than deleting on read, so more than two devices can share one relay.
 - **Multiple connections per device** are allowed and all receive pushes.
+- **Device names aren't stored.** `GET /devices` reports whoever is connected right now; extensions cache the last names they saw.
+
+## Logging
+
+The relay logs to standard output (under systemd, view it with `journalctl -u link-relay -f`). Each accepted link produces one line:
+
+```
+2026/11/15 14:35:56 received url:https://example.com/page from host:192.168.1.20 label:Brave
+```
+
+The ` label:` part appears only when the sending browser has a label set.
+
+- `host` is the client IP as seen by the relay. Behind a reverse proxy it will be the proxy's address.
+- Control characters in the URL are replaced with `?` so a crafted URL can't forge extra log lines.
+- Requests with a bad token or a missing `url`/`deviceId` are rejected before this line is logged.
+- Full URLs are logged, including any query strings. Keep that in mind if you send links that contain secrets.
 
 ## Quick test
 

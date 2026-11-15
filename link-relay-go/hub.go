@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +42,29 @@ func (h *Hub) remove(deviceID string, c *wsConn) {
 			delete(h.clients, deviceID)
 		}
 	}
+}
+
+// OtherLabels returns the distinct, non-empty labels of currently connected
+// devices other than excludeDeviceID, sorted. Extensions use it to name the
+// browser(s) their links will go to.
+func (h *Hub) OtherLabels(excludeDeviceID string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := map[string]bool{}
+	labels := []string{}
+	for deviceID, set := range h.clients {
+		if deviceID == excludeDeviceID {
+			continue
+		}
+		for c := range set {
+			if c.label != "" && !seen[c.label] {
+				seen[c.label] = true
+				labels = append(labels, c.label)
+			}
+		}
+	}
+	sort.Strings(labels)
+	return labels
 }
 
 func (h *Hub) BroadcastExcept(excludeDeviceID string, payload any) {
@@ -131,6 +156,7 @@ func (h *Handler) handlePostLink(w http.ResponseWriter, r *http.Request) {
 		URL      string `json:"url"`
 		Title    string `json:"title"`
 		DeviceID string `json:"deviceId"`
+		Label    string `json:"label"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
@@ -141,11 +167,19 @@ func (h *Handler) handlePostLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	label := cleanLabel(body.Label)
+	if label != "" {
+		log.Printf("received url:%s from host:%s label:%s", sanitizeLog(body.URL), remoteHost(r), label)
+	} else {
+		log.Printf("received url:%s from host:%s", sanitizeLog(body.URL), remoteHost(r))
+	}
+
 	entry := Link{
 		ID:        newID(),
 		URL:       body.URL,
 		Title:     body.Title,
 		From:      body.DeviceID,
+		FromLabel: label,
 		CreatedAt: time.Now().UnixMilli(),
 		SeenBy:    []string{},
 	}
@@ -197,12 +231,26 @@ func (h *Handler) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 		URL       string `json:"url"`
 		Title     string `json:"title"`
 		CreatedAt int64  `json:"createdAt"`
+		FromLabel string `json:"fromLabel,omitempty"`
 	}
 	out := make([]outLink, 0, len(unseen))
 	for _, l := range unseen {
-		out = append(out, outLink{l.ID, l.URL, l.Title, l.CreatedAt})
+		out = append(out, outLink{ID: l.ID, URL: l.URL, Title: l.Title, CreatedAt: l.CreatedAt, FromLabel: l.FromLabel})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) handleDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	deviceID := r.URL.Query().Get("deviceId")
+	if deviceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "deviceId is required"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"labels": h.hub.OtherLabels(deviceID)})
 }
 
 // handleStream upgrades to a WebSocket. Browsers can't set custom headers
@@ -223,8 +271,12 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.alive.Store(true)
+	c.label = cleanLabel(q.Get("label"))
 
 	h.hub.add(deviceID, c)
+	// Tell the other devices someone new is online so they can refresh the
+	// name shown in their menus.
+	h.hub.BroadcastExcept(deviceID, map[string]string{"type": "devices-changed"})
 	go h.readLoop(deviceID, c)
 }
 
@@ -249,6 +301,37 @@ func (h *Handler) readLoop(deviceID string, c *wsConn) {
 			// This relay's clients don't send application messages; ignore.
 		}
 	}
+}
+
+// remoteHost returns the client's IP as seen by this server. Behind a
+// reverse proxy this will be the proxy's address, not the real client's.
+func remoteHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// sanitizeLog replaces control characters (newlines in particular) so a
+// crafted URL can't forge extra log lines.
+func sanitizeLog(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
+// cleanLabel trims and sanitizes the browser label sent by the extension
+// and caps it at 40 characters.
+func cleanLabel(s string) string {
+	s = sanitizeLog(strings.TrimSpace(s))
+	if r := []rune(s); len(r) > 40 {
+		s = string(r[:40])
+	}
+	return s
 }
 
 func containsStr(list []string, s string) bool {

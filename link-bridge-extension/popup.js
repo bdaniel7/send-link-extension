@@ -20,6 +20,12 @@ async function renderInbox() {
     urlSpan.textContent = link.url;
     li.appendChild(titleSpan);
     li.appendChild(urlSpan);
+    if (link.fromLabel) {
+      const fromSpan = document.createElement('span');
+      fromSpan.className = 'from';
+      fromSpan.textContent = `from ${link.fromLabel}`;
+      li.appendChild(fromSpan);
+    }
 
     li.addEventListener('click', async () => {
       chrome.tabs.create({ url: link.url });
@@ -32,6 +38,12 @@ async function renderInbox() {
 
     list.appendChild(li);
   }
+}
+
+async function updateSendButton() {
+  const { targets = [] } = await chrome.storage.local.get('targets');
+  const name = targets.length ? targets.join(', ') : 'other browser';
+  document.getElementById('send-current').textContent = `Send current tab to ${name}`;
 }
 
 document.getElementById('send-current').addEventListener('click', async () => {
@@ -50,6 +62,8 @@ document.getElementById('open-options').addEventListener('click', (e) => {
 });
 
 (async () => {
+  updateSendButton(); // instant, from the cached name
   await chrome.runtime.sendMessage({ type: 'CHECK_NOW' });
+  updateSendButton(); // again, in case the relay told us something new
   renderInbox();
 })();

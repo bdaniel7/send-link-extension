@@ -16,6 +16,7 @@ type Link struct {
 	URL       string   `json:"url"`
 	Title     string   `json:"title"`
 	From      string   `json:"from"`
+	FromLabel string   `json:"fromLabel,omitempty"`
 	CreatedAt int64    `json:"createdAt"`
 	SeenBy    []string `json:"seenBy"`
 }
