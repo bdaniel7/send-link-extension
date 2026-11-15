@@ -2,6 +2,8 @@
 
 Send links from one browser to another, for example Chrome to Brave, through a relay server you host yourself. Right-click a page or link in one browser and it appears in the other, usually within a second.
 
+This is useful when testing a page in multiple browsers or when trying to open a page stuffed with ads in a browser that supports ad blockers.
+
 Link Bridge is made of two separate projects that talk to each other over a small HTTP and WebSocket API:
 
 ```
